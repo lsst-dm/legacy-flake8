@@ -1,0 +1,6 @@
+setupRequired(python)
+setupRequired(python_mccabe)
+setupRequired(pycodestyle)
+setupRequired(pyflakes)
+envPrepend(PYTHONPATH, ${PRODUCT_DIR}/lib/python)
+envPrepend(PATH, ${PRODUCT_DIR}/bin)
