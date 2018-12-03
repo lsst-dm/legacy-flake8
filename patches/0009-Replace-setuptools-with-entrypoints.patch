@@ -1,0 +1,463 @@
+From ff15ba0865c396688ac3254b6401beed501496f4 Mon Sep 17 00:00:00 2001
+From: Anthony Sottile <asottile@umich.edu>
+Date: Mon, 5 Nov 2018 11:06:25 -0800
+Subject: [PATCH 09/14] Replace setuptools with entrypoints
+
+---
+ setup.py                          |  2 +-
+ src/flake8/main/application.py    | 13 ++-----
+ src/flake8/main/debug.py          |  7 ++--
+ src/flake8/plugins/manager.py     | 30 ++++++----------
+ tests/integration/test_checker.py |  7 ++--
+ tests/unit/test_application.py    |  9 -----
+ tests/unit/test_debug.py          | 10 +++---
+ tests/unit/test_plugin.py         | 58 +++++++++----------------------
+ tests/unit/test_plugin_manager.py | 38 ++++++++++----------
+ 9 files changed, 59 insertions(+), 115 deletions(-)
+
+diff --git a/setup.py b/setup.py
+index e2adfbf..24e8996 100644
+--- a/setup.py
++++ b/setup.py
+@@ -21,10 +21,10 @@ requires = [
+     # http://flake8.pycqa.org/en/latest/faq.html#why-does-flake8-use-ranges-for-its-dependencies
+     # And in which releases we will update those ranges here:
+     # http://flake8.pycqa.org/en/latest/internal/releases.html#releasing-flake8
++    "entrypoints >= 0.2.3, < 0.3.0",
+     "pyflakes >= 2.0.0, < 2.1.0",
+     "pycodestyle >= 2.4.0, < 2.5.0",
+     "mccabe >= 0.6.0, < 0.7.0",
+-    "setuptools >= 30",
+ ]
+ 
+ extras_require = {
+diff --git a/src/flake8/main/application.py b/src/flake8/main/application.py
+index b86b3cc..86d7fd4 100644
+--- a/src/flake8/main/application.py
++++ b/src/flake8/main/application.py
+@@ -169,7 +169,7 @@ class Application(object):
+         If :attr:`check_plugins`, :attr:`listening_plugins`, or
+         :attr:`formatting_plugins` are ``None`` then this method will update
+         them with the appropriate plugin manager instance. Given the expense
+-        of finding plugins (via :mod:`pkg_resources`) we want this to be
++        of finding plugins (via :mod:`entrypoints`) we want this to be
+         idempotent and so only update those attributes if they are ``None``.
+         """
+         if self.local_plugins is None:
+@@ -238,16 +238,7 @@ class Application(object):
+ 
+     def formatter_for(self, formatter_plugin_name):
+         """Retrieve the formatter class by plugin name."""
+-        try:
+-            default_formatter = self.formatting_plugins["default"]
+-        except KeyError:
+-            raise exceptions.ExecutionError(
+-                "The 'default' Flake8 formatting plugin is unavailable. "
+-                "This usually indicates that your setuptools is too old. "
+-                "Please upgrade setuptools. If that does not fix the issue"
+-                " please file an issue."
+-            )
+-
++        default_formatter = self.formatting_plugins["default"]
+         formatter_plugin = self.formatting_plugins.get(formatter_plugin_name)
+         if formatter_plugin is None:
+             LOG.warning(
+diff --git a/src/flake8/main/debug.py b/src/flake8/main/debug.py
+index 51bac9a..e02da6b 100644
+--- a/src/flake8/main/debug.py
++++ b/src/flake8/main/debug.py
+@@ -4,6 +4,8 @@ from __future__ import print_function
+ import json
+ import platform
+ 
++import entrypoints
++
+ 
+ def print_information(
+     option, option_string, value, parser, option_manager=None
+@@ -64,7 +66,4 @@ def plugins_from(option_manager):
+ 
+ def dependencies():
+     """Generate the list of dependencies we care about."""
+-    # defer this expensive import, not used outside --bug-report
+-    import setuptools
+-
+-    return [{"dependency": "setuptools", "version": setuptools.__version__}]
++    return [{"dependency": "entrypoints", "version": entrypoints.__version__}]
+diff --git a/src/flake8/plugins/manager.py b/src/flake8/plugins/manager.py
+index e17fc17..58fbe10 100644
+--- a/src/flake8/plugins/manager.py
++++ b/src/flake8/plugins/manager.py
+@@ -2,7 +2,7 @@
+ import logging
+ import sys
+ 
+-import pkg_resources
++import entrypoints
+ 
+ from flake8 import exceptions
+ from flake8 import utils
+@@ -143,17 +143,8 @@ class Plugin(object):
+         r"""Call the plugin with \*args and \*\*kwargs."""
+         return self.plugin(*args, **kwargs)  # pylint: disable=not-callable
+ 
+-    def _load(self, verify_requirements):
+-        # Avoid relying on hasattr() here.
+-        resolve = getattr(self.entry_point, "resolve", None)
+-        require = getattr(self.entry_point, "require", None)
+-        if resolve and require:
+-            if verify_requirements:
+-                LOG.debug('Verifying plugin "%s"\'s requirements.', self.name)
+-                require()
+-            self._plugin = resolve()
+-        else:
+-            self._plugin = self.entry_point.load(require=verify_requirements)
++    def _load(self):
++        self._plugin = self.entry_point.load()
+         if not callable(self._plugin):
+             msg = (
+                 "Plugin %r is not a callable. It might be written for an"
+@@ -171,15 +162,14 @@ class Plugin(object):
+         cached plugin.
+ 
+         :param bool verify_requirements:
+-            Whether or not to make setuptools verify that the requirements for
+-            the plugin are satisfied.
++            Does nothing, retained for backwards compatibility.
+         :returns:
+             Nothing
+         """
+         if self._plugin is None:
+             LOG.info('Loading plugin "%s" from entry-point.', self.name)
+             try:
+-                self._load(verify_requirements)
++                self._load()
+             except Exception as load_exception:
+                 LOG.exception(load_exception)
+                 failed_to_load = exceptions.FailedToLoadPlugin(
+@@ -256,11 +246,9 @@ class PluginManager(object):  # pylint: disable=too-few-public-methods
+         :param list local_plugins:
+             Plugins from config (as "X = path.to:Plugin" strings).
+         :param bool verify_requirements:
+-            Whether or not to make setuptools verify that the requirements for
+-            the plugin are satisfied.
++            Does nothing, retained for backwards compatibility.
+         """
+         self.namespace = namespace
+-        self.verify_requirements = verify_requirements
+         self.plugins = {}
+         self.names = []
+         self._load_local_plugins(local_plugins or [])
+@@ -273,12 +261,14 @@ class PluginManager(object):  # pylint: disable=too-few-public-methods
+             Plugins from config (as "X = path.to:Plugin" strings).
+         """
+         for plugin_str in local_plugins:
+-            entry_point = pkg_resources.EntryPoint.parse(plugin_str)
++            name, _, entry_str = plugin_str.partition("=")
++            name, entry_str = name.strip(), entry_str.strip()
++            entry_point = entrypoints.EntryPoint.from_string(entry_str, name)
+             self._load_plugin_from_entrypoint(entry_point, local=True)
+ 
+     def _load_entrypoint_plugins(self):
+         LOG.info('Loading entry-points for "%s".', self.namespace)
+-        for entry_point in pkg_resources.iter_entry_points(self.namespace):
++        for entry_point in entrypoints.get_group_all(self.namespace):
+             self._load_plugin_from_entrypoint(entry_point)
+ 
+     def _load_plugin_from_entrypoint(self, entry_point, local=False):
+diff --git a/tests/integration/test_checker.py b/tests/integration/test_checker.py
+index 6877470..3d10bfb 100644
+--- a/tests/integration/test_checker.py
++++ b/tests/integration/test_checker.py
+@@ -51,13 +51,12 @@ def plugin_func_list(tree):
+ def test_handle_file_plugins(plugin_target):
+     """Test the FileChecker class handling different file plugin types."""
+     # Mock an entry point returning the plugin target
+-    entry_point = mock.Mock(spec=['require', 'resolve', 'load'])
++    entry_point = mock.Mock(spec=['load'])
+     entry_point.name = plugin_target.name
+-    entry_point.resolve.return_value = plugin_target
++    entry_point.load.return_value = plugin_target
+ 
+     # Load the checker plugins using the entry point mock
+-    with mock.patch('pkg_resources.iter_entry_points',
+-                    return_value=[entry_point]):
++    with mock.patch('entrypoints.get_group_all', return_value=[entry_point]):
+         checks = manager.Checkers()
+ 
+     # Prevent it from reading lines from stdin or somewhere else
+diff --git a/tests/unit/test_application.py b/tests/unit/test_application.py
+index a281012..5ec9f1f 100644
+--- a/tests/unit/test_application.py
++++ b/tests/unit/test_application.py
+@@ -4,7 +4,6 @@ import optparse
+ import mock
+ import pytest
+ 
+-from flake8 import exceptions
+ from flake8.main import application as app
+ 
+ 
+@@ -61,14 +60,6 @@ def test_exit_does_raise(result_count, catastrophic, exit_zero, value,
+     assert excinfo.value.args[0] is value
+ 
+ 
+-def test_missing_default_formatter(application):
+-    """Verify we raise an ExecutionError when there's no default formatter."""
+-    application.formatting_plugins = {}
+-
+-    with pytest.raises(exceptions.ExecutionError):
+-        application.formatter_for('fake-plugin-name')
+-
+-
+ def test_warns_on_unknown_formatter_plugin_name(application):
+     """Verify we log a warning with an unfound plugin."""
+     default = mock.Mock()
+diff --git a/tests/unit/test_debug.py b/tests/unit/test_debug.py
+index 7253bcc..0d1f903 100644
+--- a/tests/unit/test_debug.py
++++ b/tests/unit/test_debug.py
+@@ -1,7 +1,7 @@
+ """Tests for our debugging module."""
++import entrypoints
+ import mock
+ import pytest
+-import setuptools
+ 
+ from flake8.main import debug
+ from flake8.options import manager
+@@ -9,8 +9,8 @@ from flake8.options import manager
+ 
+ def test_dependencies():
+     """Verify that we format our dependencies appropriately."""
+-    expected = [{'dependency': 'setuptools',
+-                 'version': setuptools.__version__}]
++    expected = [{'dependency': 'entrypoints',
++                 'version': entrypoints.__version__}]
+     assert expected == debug.dependencies()
+ 
+ 
+@@ -46,8 +46,8 @@ def test_information(system, pyversion, pyimpl):
+                      'is_local': False},
+                     {'plugin': 'pycodestyle', 'version': '2.0.0',
+                      'is_local': False}],
+-        'dependencies': [{'dependency': 'setuptools',
+-                          'version': setuptools.__version__}],
++        'dependencies': [{'dependency': 'entrypoints',
++                          'version': entrypoints.__version__}],
+         'platform': {
+             'python_implementation': 'CPython',
+             'python_version': '3.5.3',
+diff --git a/tests/unit/test_plugin.py b/tests/unit/test_plugin.py
+index 84f676a..4d5510f 100644
+--- a/tests/unit/test_plugin.py
++++ b/tests/unit/test_plugin.py
+@@ -14,48 +14,24 @@ def test_load_plugin_fallsback_on_old_setuptools():
+     plugin = manager.Plugin('T000', entry_point)
+ 
+     plugin.load_plugin()
+-    entry_point.load.assert_called_once_with(require=False)
+-
+-
+-def test_load_plugin_avoids_deprecated_entry_point_methods():
+-    """Verify we use the preferred methods on new versions of setuptools."""
+-    entry_point = mock.Mock(spec=['require', 'resolve', 'load'])
+-    plugin = manager.Plugin('T000', entry_point)
+-
+-    plugin.load_plugin(verify_requirements=True)
+-    assert entry_point.load.called is False
+-    entry_point.require.assert_called_once_with()
+-    entry_point.resolve.assert_called_once_with()
++    entry_point.load.assert_called_once_with()
+ 
+ 
+ def test_load_plugin_is_idempotent():
+     """Verify we use the preferred methods on new versions of setuptools."""
+-    entry_point = mock.Mock(spec=['require', 'resolve', 'load'])
++    entry_point = mock.Mock(spec=['load'])
+     plugin = manager.Plugin('T000', entry_point)
+ 
+-    plugin.load_plugin(verify_requirements=True)
+-    plugin.load_plugin(verify_requirements=True)
+     plugin.load_plugin()
+-    assert entry_point.load.called is False
+-    entry_point.require.assert_called_once_with()
+-    entry_point.resolve.assert_called_once_with()
+-
+-
+-def test_load_plugin_only_calls_require_when_verifying_requirements():
+-    """Verify we do not call require when verify_requirements is False."""
+-    entry_point = mock.Mock(spec=['require', 'resolve', 'load'])
+-    plugin = manager.Plugin('T000', entry_point)
+-
+     plugin.load_plugin()
+-    assert entry_point.load.called is False
+-    assert entry_point.require.called is False
+-    entry_point.resolve.assert_called_once_with()
++    plugin.load_plugin()
++    entry_point.load.assert_called_once_with()
+ 
+ 
+ def test_load_plugin_catches_and_reraises_exceptions():
+     """Verify we raise our own FailedToLoadPlugin."""
+-    entry_point = mock.Mock(spec=['require', 'resolve'])
+-    entry_point.resolve.side_effect = ValueError('Test failure')
++    entry_point = mock.Mock(spec=['load'])
++    entry_point.load.side_effect = ValueError('Test failure')
+     plugin = manager.Plugin('T000', entry_point)
+ 
+     with pytest.raises(exceptions.FailedToLoadPlugin):
+@@ -64,27 +40,27 @@ def test_load_plugin_catches_and_reraises_exceptions():
+ 
+ def test_load_noncallable_plugin():
+     """Verify that we do not load a non-callable plugin."""
+-    entry_point = mock.Mock(spec=['require', 'resolve', 'load'])
+-    entry_point.resolve.return_value = mock.NonCallableMock()
++    entry_point = mock.Mock(spec=['load'])
++    entry_point.load.return_value = mock.NonCallableMock()
+     plugin = manager.Plugin('T000', entry_point)
+ 
+     with pytest.raises(exceptions.FailedToLoadPlugin):
+         plugin.load_plugin()
+-    entry_point.resolve.assert_called_once_with()
++    entry_point.load.assert_called_once_with()
+ 
+ 
+ def test_plugin_property_loads_plugin_on_first_use():
+     """Verify that we load our plugin when we first try to use it."""
+-    entry_point = mock.Mock(spec=['require', 'resolve', 'load'])
++    entry_point = mock.Mock(spec=['load'])
+     plugin = manager.Plugin('T000', entry_point)
+ 
+     assert plugin.plugin is not None
+-    entry_point.resolve.assert_called_once_with()
++    entry_point.load.assert_called_once_with()
+ 
+ 
+ def test_execute_calls_plugin_with_passed_arguments():
+     """Verify that we pass arguments directly to the plugin."""
+-    entry_point = mock.Mock(spec=['require', 'resolve', 'load'])
++    entry_point = mock.Mock(spec=['load'])
+     plugin_obj = mock.Mock()
+     plugin = manager.Plugin('T000', entry_point)
+     plugin._plugin = plugin_obj
+@@ -96,13 +72,11 @@ def test_execute_calls_plugin_with_passed_arguments():
+ 
+     # Extra assertions
+     assert entry_point.load.called is False
+-    assert entry_point.require.called is False
+-    assert entry_point.resolve.called is False
+ 
+ 
+ def test_version_proxies_to_the_plugin():
+     """Verify that we pass arguments directly to the plugin."""
+-    entry_point = mock.Mock(spec=['require', 'resolve', 'load'])
++    entry_point = mock.Mock(spec=['load'])
+     plugin_obj = mock.Mock(spec_set=['version'])
+     plugin_obj.version = 'a.b.c'
+     plugin = manager.Plugin('T000', entry_point)
+@@ -114,7 +88,7 @@ def test_version_proxies_to_the_plugin():
+ def test_register_options():
+     """Verify we call add_options on the plugin only if it exists."""
+     # Set up our mocks and Plugin object
+-    entry_point = mock.Mock(spec=['require', 'resolve', 'load'])
++    entry_point = mock.Mock(spec=['load'])
+     plugin_obj = mock.Mock(spec_set=['name', 'version', 'add_options',
+                                      'parse_options'])
+     option_manager = mock.Mock(spec=['register_plugin'])
+@@ -131,7 +105,7 @@ def test_register_options():
+ def test_register_options_checks_plugin_for_method():
+     """Verify we call add_options on the plugin only if it exists."""
+     # Set up our mocks and Plugin object
+-    entry_point = mock.Mock(spec=['require', 'resolve', 'load'])
++    entry_point = mock.Mock(spec=['load'])
+     plugin_obj = mock.Mock(spec_set=['name', 'version', 'parse_options'])
+     option_manager = mock.Mock(spec=['register_plugin'])
+     plugin = manager.Plugin('T000', entry_point)
+@@ -147,7 +121,7 @@ def test_register_options_checks_plugin_for_method():
+ def test_provide_options():
+     """Verify we call add_options on the plugin only if it exists."""
+     # Set up our mocks and Plugin object
+-    entry_point = mock.Mock(spec=['require', 'resolve', 'load'])
++    entry_point = mock.Mock(spec=['load'])
+     plugin_obj = mock.Mock(spec_set=['name', 'version', 'add_options',
+                                      'parse_options'])
+     option_values = optparse.Values({'enable_extensions': []})
+diff --git a/tests/unit/test_plugin_manager.py b/tests/unit/test_plugin_manager.py
+index 9019ead..72959b0 100644
+--- a/tests/unit/test_plugin_manager.py
++++ b/tests/unit/test_plugin_manager.py
+@@ -11,51 +11,51 @@ def create_entry_point_mock(name):
+     return ep
+ 
+ 
+-@mock.patch('pkg_resources.iter_entry_points')
+-def test_calls_pkg_resources_on_instantiation(iter_entry_points):
+-    """Verify that we call iter_entry_points when we create a manager."""
+-    iter_entry_points.return_value = []
+-    manager.PluginManager(namespace='testing.pkg_resources')
++@mock.patch('entrypoints.get_group_all')
++def test_calls_entrypoints_on_instantiation(get_group_all):
++    """Verify that we call get_group_all when we create a manager."""
++    get_group_all.return_value = []
++    manager.PluginManager(namespace='testing.entrypoints')
+ 
+-    iter_entry_points.assert_called_once_with('testing.pkg_resources')
++    get_group_all.assert_called_once_with('testing.entrypoints')
+ 
+ 
+-@mock.patch('pkg_resources.iter_entry_points')
+-def test_calls_pkg_resources_creates_plugins_automaticaly(iter_entry_points):
++@mock.patch('entrypoints.get_group_all')
++def test_calls_entrypoints_creates_plugins_automaticaly(get_group_all):
+     """Verify that we create Plugins on instantiation."""
+-    iter_entry_points.return_value = [
++    get_group_all.return_value = [
+         create_entry_point_mock('T100'),
+         create_entry_point_mock('T200'),
+     ]
+-    plugin_mgr = manager.PluginManager(namespace='testing.pkg_resources')
++    plugin_mgr = manager.PluginManager(namespace='testing.entrypoints')
+ 
+-    iter_entry_points.assert_called_once_with('testing.pkg_resources')
++    get_group_all.assert_called_once_with('testing.entrypoints')
+     assert 'T100' in plugin_mgr.plugins
+     assert 'T200' in plugin_mgr.plugins
+     assert isinstance(plugin_mgr.plugins['T100'], manager.Plugin)
+     assert isinstance(plugin_mgr.plugins['T200'], manager.Plugin)
+ 
+ 
+-@mock.patch('pkg_resources.iter_entry_points')
+-def test_handles_mapping_functions_across_plugins(iter_entry_points):
++@mock.patch('entrypoints.get_group_all')
++def test_handles_mapping_functions_across_plugins(get_group_all):
+     """Verify we can use the PluginManager call functions on all plugins."""
+     entry_point_mocks = [
+         create_entry_point_mock('T100'),
+         create_entry_point_mock('T200'),
+     ]
+-    iter_entry_points.return_value = entry_point_mocks
+-    plugin_mgr = manager.PluginManager(namespace='testing.pkg_resources')
++    get_group_all.return_value = entry_point_mocks
++    plugin_mgr = manager.PluginManager(namespace='testing.entrypoints')
+     plugins = [plugin_mgr.plugins[name] for name in plugin_mgr.names]
+ 
+     assert list(plugin_mgr.map(lambda x: x)) == plugins
+ 
+ 
+-@mock.patch('pkg_resources.iter_entry_points')
+-def test_local_plugins(iter_entry_points):
++@mock.patch('entrypoints.get_group_all')
++def test_local_plugins(get_group_all):
+     """Verify PluginManager can load given local plugins."""
+-    iter_entry_points.return_value = []
++    get_group_all.return_value = []
+     plugin_mgr = manager.PluginManager(
+-        namespace='testing.pkg_resources',
++        namespace='testing.entrypoints',
+         local_plugins=['X = path.to:Plugin']
+     )
+ 
+-- 
+2.17.2 (Apple Git-113)
+
