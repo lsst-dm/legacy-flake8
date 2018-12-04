@@ -1,0 +1,52 @@
+From b8dbb9b597634c3cc7ee6a74fc5d89120ba1a8de Mon Sep 17 00:00:00 2001
+From: Anthony Sottile <asottile@umich.edu>
+Date: Wed, 21 Nov 2018 09:30:05 -0800
+Subject: [PATCH 10/13] Remove unused verify_requirements argument
+
+---
+ src/flake8/plugins/manager.py | 10 ++--------
+ 1 file changed, 2 insertions(+), 8 deletions(-)
+
+diff --git a/src/flake8/plugins/manager.py b/src/flake8/plugins/manager.py
+index 010cfb9..411e02f 100644
+--- a/src/flake8/plugins/manager.py
++++ b/src/flake8/plugins/manager.py
+@@ -154,15 +154,13 @@ class Plugin(object):
+             LOG.critical(msg)
+             raise TypeError(msg)
+ 
+-    def load_plugin(self, verify_requirements=False):
++    def load_plugin(self):
+         """Retrieve the plugin for this entry-point.
+ 
+         This loads the plugin, stores it on the instance and then returns it.
+         It does not reload it after the first time, it merely returns the
+         cached plugin.
+ 
+-        :param bool verify_requirements:
+-            Does nothing, retained for backwards compatibility.
+         :returns:
+             Nothing
+         """
+@@ -236,17 +234,13 @@ class Plugin(object):
+ class PluginManager(object):  # pylint: disable=too-few-public-methods
+     """Find and manage plugins consistently."""
+ 
+-    def __init__(
+-        self, namespace, verify_requirements=False, local_plugins=None
+-    ):
++    def __init__(self, namespace, local_plugins=None):
+         """Initialize the manager.
+ 
+         :param str namespace:
+             Namespace of the plugins to manage, e.g., 'flake8.extension'.
+         :param list local_plugins:
+             Plugins from config (as "X = path.to:Plugin" strings).
+-        :param bool verify_requirements:
+-            Does nothing, retained for backwards compatibility.
+         """
+         self.namespace = namespace
+         self.plugins = {}
+-- 
+2.17.2 (Apple Git-113)
+
